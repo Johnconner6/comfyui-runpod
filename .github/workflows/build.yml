@@ -14,9 +14,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Free disk space
-        # CUDA images are large — free up runner space first
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune -af
+          sudo apt-get clean
           df -h
 
       - name: Log in to Docker Hub
@@ -27,6 +33,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            env.BUILDKIT_STEP_LOG_MAX_SIZE=50000000
 
       - name: Build and Push
         uses: docker/build-push-action@v5
