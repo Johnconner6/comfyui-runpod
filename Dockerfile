@@ -14,18 +14,21 @@ RUN apt-get update && apt-get install -y \
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
     ln -sf /usr/bin/python3.11 /usr/bin/python3
 
-# Python deps
-COPY requirements.txt .
-RUN pip install --no-cache-dir torch --pre --index-url https://download.pytorch.org/whl/nightly/cu124
+# Step 1 — install comfy-cli FIRST before calling it
+RUN pip install comfy-cli
+
+# Step 2 — now install ComfyUI via comfy-cli
+RUN comfy --skip-prompt install --nvidia
+
+# Step 3 — install all other Python deps
 RUN pip install --no-cache-dir \
-    comfy-cli aiohttp requests Pillow gguf safetensors \
+    torch --pre --index-url https://download.pytorch.org/whl/nightly/cu124
+RUN pip install --no-cache-dir \
+    aiohttp requests Pillow gguf safetensors \
     transformers accelerate opencv-python-headless \
     imageio imageio-ffmpeg fastapi uvicorn runpod
 
-# Install ComfyUI
-RUN comfy --skip-prompt install --nvidia
-
-# Install custom nodes
+# Step 4 — install custom nodes
 RUN cd ${COMFY_DIR}/custom_nodes && \
     git clone https://github.com/MoonGoblinDev/Civicomfy.git && \
     git clone https://github.com/chibiace/ComfyUI-Chibi-Nodes.git && \
@@ -44,7 +47,12 @@ RUN cd ${COMFY_DIR}/custom_nodes && \
     git clone https://github.com/PozzettiAndrea/ComfyUI-SAM3.git && \
     find . -name requirements.txt | xargs -I{} pip install -r {} -q || true
 
+# Step 5 — copy handler code
 COPY src/ /app/
+
+# Step 6 — copy extra_model_paths.yaml
+COPY src/extra_model_paths.yaml /root/comfy/ComfyUI/extra_model_paths.yaml
+
 WORKDIR /app
 
 CMD ["python", "-u", "handler.py"]
