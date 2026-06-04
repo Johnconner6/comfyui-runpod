@@ -1,0 +1,13 @@
+runpod
+requests
+Pillow
+aiohttp
+gguf
+safetensors
+transformers
+accelerate
+opencv-python-headless
+imageio
+imageio-ffmpeg
+fastapi
+uvicorn
