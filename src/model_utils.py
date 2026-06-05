@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import struct
+import time
 import requests
 
 COMFY_DIR = "/root/comfy/ComfyUI"
@@ -12,11 +13,18 @@ MODEL_SUBDIRS = [
     "controlnet", "upscale_models", "embeddings", "configs", "sam3"
 ]
 
+# Minimum expected sizes for large models — used for fast size-only validation
 MODEL_MIN_SIZES = {
-    "Qwen-Image-Edit-2509-Q8_0.gguf":        8_000_000_000,
-    "wan2.1-i2v-14b-720p-Q8_0.gguf":         14_000_000_000,
-    "qwen_2.5_vl_7b_fp8_scaled.safetensors": 7_000_000_000,
-    "umt5-xxl-enc-bf16.safetensors":          10_000_000_000,
+    "Qwen-Image-Edit-2509-Q8_0.gguf":                    8_000_000_000,
+    "wan2.1-i2v-14b-720p-Q8_0.gguf":                    14_000_000_000,
+    "qwen_2.5_vl_7b_fp8_scaled.safetensors":             7_000_000_000,
+    "umt5-xxl-enc-bf16.safetensors":                     1_000_000_000,
+    "Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors": 500_000_000,
+    "Try_On_Qwen_Edit_Lora.safetensors":                 100_000_000,
+    "Qwen_Snofs_1_2.safetensors":                        100_000_000,
+    "qwen_image_vae.safetensors":                        100_000_000,
+    "wan_2.1_vae.safetensors":                           100_000_000,
+    "sam3.safetensors":                                  100_000_000,
 }
 
 MODELS = [
@@ -32,6 +40,27 @@ MODELS = [
     ("loras", "Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors", "https://huggingface.co/lightx2v/Qwen-Image-Lightning/resolve/main/Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors"),
     ("loras", "Try_On_Qwen_Edit_Lora.safetensors",                 "https://huggingface.co/FoxBaze/Try_On_Qwen_Edit_Lora_Alpha/resolve/main/Try_On_Qwen_Edit_Lora.safetensors"),
 ]
+
+
+def wait_for_volume(path=MODEL_DIR, timeout=60):
+    """Wait until the network volume is mounted and accessible."""
+    print(f"[startup] waiting for volume at {path}...", flush=True)
+    start = time.time()
+
+    # Wait for /runpod-volume to be a real mount
+    while not os.path.ismount("/runpod-volume"):
+        elapsed = time.time() - start
+        if elapsed >= timeout:
+            print(f"[startup] WARNING: /runpod-volume not mounted after {timeout}s, continuing anyway", flush=True)
+            break
+        print(f"[startup] volume not mounted yet, waiting... ({elapsed:.0f}s)", flush=True)
+        time.sleep(2)
+
+    # Make sure model dir exists
+    os.makedirs(path, exist_ok=True)
+
+    elapsed = time.time() - start
+    print(f"[startup] volume ready after {elapsed:.1f}s", flush=True)
 
 
 def setup_model_symlinks():
@@ -50,55 +79,63 @@ def setup_model_symlinks():
 
 
 def is_file_valid(path: str, filename: str) -> bool:
+    """
+    Fast validation: check file exists and size is above minimum.
+    For large models listed in MODEL_MIN_SIZES, size check alone is sufficient.
+    For small/unknown safetensors, do a lightweight 8-byte header check only.
+    Deep offset validation is skipped to keep startup fast on network volumes.
+    """
     if not os.path.exists(path):
         return False
+
+    actual = os.path.getsize(path)
+
+    # Size check — fast and reliable for all known large models
     min_size = MODEL_MIN_SIZES.get(filename, 0)
     if min_size > 0:
-        actual = os.path.getsize(path)
         if actual < min_size:
-            print(f"[models] CORRUPT: {filename} is {actual} bytes, expected >= {min_size}")
+            print(f"[models] CORRUPT: {filename} is {actual:,} bytes, expected >= {min_size:,}", flush=True)
             return False
+        # Size looks good — trust it, skip deep validation
+        return True
+
+    # For files not in MODEL_MIN_SIZES, do a lightweight header check only
     if filename.endswith(".safetensors"):
         try:
-            file_size = os.path.getsize(path)
             with open(path, "rb") as f:
                 raw = f.read(8)
                 if len(raw) < 8:
+                    print(f"[models] CORRUPT: {filename} header too short", flush=True)
                     return False
                 header_size = struct.unpack("<Q", raw)[0]
-                if file_size < 8 + header_size:
-                    return False
-                header_bytes = f.read(header_size)
-                metadata = json.loads(header_bytes)
-                max_end = 0
-                for key, info in metadata.items():
-                    if key == "__metadata__":
-                        continue
-                    if isinstance(info, dict) and "data_offsets" in info:
-                        end = info["data_offsets"][1]
-                        if end > max_end:
-                            max_end = end
-                if file_size < 8 + header_size + max_end:
+                if actual < 8 + header_size:
+                    print(f"[models] CORRUPT: {filename} file truncated", flush=True)
                     return False
         except Exception as e:
-            print(f"[models] CORRUPT: {filename} validation failed: {e}")
+            print(f"[models] CORRUPT: {filename} validation failed: {e}", flush=True)
             return False
+
     return True
 
 
 def download_models():
+    """Download any missing or corrupt models to the network volume."""
     hf_token = os.environ.get("HF_TOKEN", "")
     headers  = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
+
     for subdir, filename, url in MODELS:
         dest = f"{MODEL_DIR}/{subdir}/{filename}"
+
         if is_file_valid(dest, filename):
-            print(f"[models] cached: {filename}")
+            print(f"[models] cached: {filename}", flush=True)
             continue
+
         if os.path.exists(dest):
-            print(f"[models] removing corrupt: {filename}")
+            print(f"[models] removing corrupt/incomplete: {filename}", flush=True)
             os.remove(dest)
+
         tmp = dest + ".tmp"
-        print(f"[models] downloading {filename}...")
+        print(f"[models] downloading {filename}...", flush=True)
         try:
             r = requests.get(url, headers=headers, stream=True, timeout=3600)
             r.raise_for_status()
@@ -108,7 +145,7 @@ def download_models():
                     f.write(chunk)
                     downloaded += len(chunk)
             os.rename(tmp, dest)
-            print(f"[models] done: {filename} ({downloaded:,} bytes)")
+            print(f"[models] done: {filename} ({downloaded:,} bytes)", flush=True)
         except Exception as e:
             if os.path.exists(tmp):
                 os.remove(tmp)
