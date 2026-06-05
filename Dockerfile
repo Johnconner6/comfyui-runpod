@@ -4,6 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV COMFY_DIR=/root/comfy/ComfyUI
 ENV MODEL_DIR=/runpod-volume/models
+ENV PYTHONPATH=/app
 
 # System deps
 RUN apt-get update && apt-get install -y \
@@ -14,15 +15,16 @@ RUN apt-get update && apt-get install -y \
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
     ln -sf /usr/bin/python3.11 /usr/bin/python3
 
-# Step 1 — install comfy-cli FIRST before calling it
+# Step 1 — install comfy-cli FIRST
 RUN pip install comfy-cli
 
-# Step 2 — now install ComfyUI via comfy-cli
+# Step 2 — install ComfyUI
 RUN comfy --skip-prompt install --nvidia
 
-# Step 3 — install all other Python deps
+# Step 3 — install Python deps
 RUN pip install --no-cache-dir \
     torch --pre --index-url https://download.pytorch.org/whl/nightly/cu124
+
 RUN pip install --no-cache-dir \
     aiohttp requests Pillow gguf safetensors \
     transformers accelerate opencv-python-headless \
