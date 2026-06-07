@@ -22,4 +22,4 @@ def handler(job):
         print(f"[handler] error: {e}", flush=True)
         return {"error": str(e)}
 
-runpod.serverless.start({"handler": handler})
+runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})
